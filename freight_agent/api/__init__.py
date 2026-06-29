@@ -1,0 +1,1 @@
+"""FastAPI surface for the freight agent (query + supporting lookups)."""

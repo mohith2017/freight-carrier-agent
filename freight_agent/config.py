@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     embed_model: str = Field(default="text-embedding-3-small")
     embed_dim: int = Field(default=1536)
 
+    cors_origins: str = Field(default="http://localhost:3000")
+    api_rate_limit_per_min: int = Field(default=30)
+
     @property
     def dataset_path(self) -> Path:
         return _resolve(self.dataset_dir)
@@ -62,6 +65,10 @@ class Settings(BaseSettings):
     @property
     def uses_postgres(self) -> bool:
         return bool(self.database_url.strip())
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 @lru_cache
