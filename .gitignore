@@ -20,3 +20,5 @@ node_modules/
 out/
 
 .DS_Store
+
+evals/*.json

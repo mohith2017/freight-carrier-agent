@@ -1,142 +1,55 @@
 # Freight Carrier Agent
 
-AI-native intake assistant for a freight broker's inbound queue. Ingests carrier
-emails and call recordings, normalizes the messiness into a relational
-system-of-record plus a vector evidence layer, and answers broker questions /
-drafts carrier replies via a typed, tool-using agent.
+AI intake assistant for a freight broker's inbound queue: ingests carrier emails
+and call recordings, normalizes them into a relational + vector store, and
+answers questions / drafts replies via a typed, tool-using agent.
 
-Built phase by phase; each phase ends in a test gate.
+## Live demo
+
+- **App:** https://freight-carrier-agent.vercel.app
+- **API:** https://freight-carrier-agent.fastapicloud.dev/docs
+
+Backend reads a pre-seeded Supabase; it never ingests on boot.
 
 ## Stack
 
-- **Datastore:** Supabase Postgres + `pgvector` (primary), SQLite (local backup/dev)
-- **Agent:** Pydantic AI (`gpt-5.5`), native typed tools, structured-first hybrid retrieval
-- **Ingestion:** deterministic parse + `gpt-5.4-mini` extraction; `gpt-4o-transcribe-diarize`; `text-embedding-3-small`
-- **Backend:** FastAPI on FastAPI Cloud  ·  **Frontend:** Next.js + TS on Vercel
-- **Eval:** Pydantic Evals on one core workflow
+- **Store:** Supabase Postgres + `pgvector` (primary), SQLite (local mirror)
+- **Agent:** Pydantic AI (`gpt-5.5`), typed tools, structured-first hybrid retrieval
+- **Ingestion:** `gpt-4o-transcribe-diarize` + `gpt-5.4-mini` extraction + `text-embedding-3-small`
+- **Backend:** FastAPI / FastAPI Cloud  ·  **Frontend:** Next.js + TS / Vercel  ·  **Eval:** Pydantic Evals
 
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph ingest [Offline ingestion - Typer CLI]
-    emails[carrier_emails.json] --> det[deterministic regex pass]
-    wavs[55 WAVs] --> stt["gpt-4o-transcribe-diarize"] --> det
-    det --> ext["gpt-5.4-mini extraction (confidence + evidence)"]
-    ext --> rec[entity resolution: MC -> domain -> fuzzy name]
-    structured[loads.csv / rate_history.csv / carrier_profiles.json] --> pg
-    rec --> pg[(Supabase Postgres + pgvector)]
-    rec --> chunks[chunk + embed text-embedding-3-small] --> pg
-    pg -. mirror .-> sqlite[(SQLite local backup)]
-  end
-  subgraph backend [FastAPI on FastAPI Cloud]
-    api[/query SSE · loads · carriers · rates · health/]
-    agent["Pydantic AI agent (gpt-5.5)"] --> router[structured-first retrieval]
-    api --> agent
-    router --> sql[structured SQL tools] --> pg
-    router --> vec[pgvector + FTS + metadata boost] --> pg
-  end
-  ui[Next.js chat UI on Vercel] -->|SSE| api
-```
-
-**Data model.** Canonical carrier/load/rate/offers stay **relational**; only
-email bodies, transcript utterances, and notes are embedded. Tables: `carriers`,
-`loads`, `rate_history`, `comm_events` (traceable evidence layer with
-`extracted`/`confidence`/`raw_payload` jsonb), `offers` (extracted commercial
-signal), `knowledge_chunks` (`vector(1536)` retrieval units). Uncertain
-extractions live in jsonb without corrupting canonical records.
-
-**Ingestion.** Deterministic parse → `gpt-5.4-mini` structured extraction (prefer
-`null` over guessing) → entity resolution (MC → email domain → fuzzy name, with
-cross-channel flagging) → chunk + embed. Calls are transcribed with a domain
-glossary prompt, then run through the same extraction.
-
-**Retrieval.** Structured-first policy enforced in code (load/MC/lane/date ⇒ call
-the structured tool before semantic search); hybrid score
-`0.55*vector + 0.25*fts + 0.20*metadata_boost`; a compliance gate surfaces
-`authority_status` / `insurance_expiry` before suggesting a booking.
-
-The **why** behind every choice and trade-off is in
-[`docs/DECISIONS.md`](docs/DECISIONS.md). Extension-readiness: modular typed
-tools, an extension-friendly jsonb schema, and idempotent/incremental ingestion.
-
-## Getting started
+## Quickstart
 
 Requires [uv](https://docs.astral.sh/uv/). From the repo root:
 
 ```bash
-uv venv
-uv sync --extra dev --extra ai --extra pg   # pg = Supabase/Postgres driver
-cp .env.example .env                         # then set OPENAI_API_KEY
-```
-
-Load the relational core, then run the full ingestion pipeline:
-
-```bash
+uv sync --extra dev --extra ai --extra pg   # pg = Postgres driver
+cp .env.example .env                         # set OPENAI_API_KEY
 uv run python -m freight_agent init-db
 uv run python -m freight_agent load          # 50 loads / 48 carriers / 720 rates
 uv run python -m freight_agent ingest all    # emails -> calls -> reconcile -> embed
 uv run python -m freight_agent ask "Best rate on offer for load #29372289 vs market?"
-uv run pytest
 ```
 
-Run the web app (FastAPI backend with SSE streaming + Next.js chat UI):
-
-```bash
-uv sync --extra dev --extra ai --extra pg --extra api
-uv run uvicorn freight_agent.api.app:app --reload --port 8000   # API at :8000/docs
-cd frontend && npm install && cp .env.example .env.local && npm run dev   # UI at :3000
-```
-
-The full **run-and-verify guide** (setup, expected output, the web app, Supabase,
-tests, troubleshooting) is in **[`runbooks/README.md`](runbooks/README.md)** — a
-single document so it's easy to follow end to end.
+Web app (add `--extra api`): `uvicorn freight_agent.api.app:app` + `cd frontend && npm i && npm run dev`.
+Full setup/verify steps: **[`runbooks/README.md`](runbooks/README.md)**.
 
 ## Evaluation
 
-Core workflow: given one inbound carrier inquiry, identify carrier + load,
-extract rate + availability, answer the broker question, and draft a reply.
-Pydantic Evals over 12–15 goldens (email / call / cross-channel-messy), scoring
-entity-resolution accuracy, offer-extraction F1, tool-selection correctness, and
-answer/draft quality. _Scores + top failure modes + what I'd improve are recorded
-here once the eval run lands (Phase 5)._
+**Pydantic Evals** over **13 goldens** from the real dataset ([`evals/`](evals/)):
 
-## Documentation
-
-- **[`docs/DECISIONS.md`](docs/DECISIONS.md)** — ADR-style decision log (the
-  "why" behind every choice and trade-off), written as the build progresses.
-- **[`docs/AI_ARTIFACTS.md`](docs/AI_ARTIFACTS.md)** — how AI was used to build
-  the project and how it powers the product (prompts, schemas, model tiers).
-
-The run-and-verify guide lives in [`runbooks/README.md`](runbooks/README.md).
-
-## Repo layout
-
-Two deployables — a Python backend (the repo root *is* the backend project) and a
-Next.js frontend — plus repo-wide docs.
-
-```
-freight-carrier-agent/
-├── freight_agent/        # BACKEND — Python service (deploy: FastAPI Cloud)
-│   ├── api/              #   FastAPI app: app, deps, schemas
-│   ├── agent.py          #   Pydantic AI agent + typed tools
-│   ├── tools.py, retrieval.py, rates.py
-│   ├── ingestion/        #   email/call parse, extract, reconcile, embed
-│   ├── db/               #   engine, models, schemas (cross-dialect)
-│   └── cli.py            #   `freight` Typer CLI (ingestion + ask)
-├── tests/                # BACKEND — pytest gates
-├── pyproject.toml, uv.lock
-├── data/                 # BACKEND runtime — SQLite store + transcript cache (gitignored)
-│
-├── frontend/             # FRONTEND — Next.js 15 + TS chat UI (deploy: Vercel)
-│   ├── app/, components/, lib/
-│
-├── README.md             # repo-wide
-├── docs/                 # repo-wide — DECISIONS.md, AI_ARTIFACTS.md
-└── runbooks/             # repo-wide — single end-to-end run/verify guide
+```bash
+uv run python -m evals.run                  # deterministic scorers + LLM judges
+uv run python -m evals.run --no-judges      # cheap: scorers only
 ```
 
-The backend lives at the root because it's the importable Python package
-(`freight_agent.api.app:app` for the API, `freight` for the CLI); the frontend is
-the one self-contained non-Python subproject. `docs/` and `runbooks/` describe both
-apps, so they stay repo-wide rather than inside either one.
+Scores entity resolution, tool selection, fact coverage, no-fabrication,
+follow-up correctness, draft presence, and (with judges) answer quality + draft
+factuality. Deterministic scorers are unit-tested offline (`tests/test_evals.py`).
+
+## Docs
+
+- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — diagram, data model, ingestion, retrieval, layout
+- **[`docs/DECISIONS.md`](docs/DECISIONS.md)** — decision log (the "why" + trade-offs)
+- **[`docs/AI_ARTIFACTS.md`](docs/AI_ARTIFACTS.md)** — how AI built and powers the project
+- **[`runbooks/README.md`](runbooks/README.md)** — end-to-end run/verify guide

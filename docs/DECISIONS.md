@@ -134,6 +134,30 @@ boxed in `frontend/` (renamed from `web/`). The API is a subpackage (`freight_ag
 because it shares the agent, tools, and db models with the CLI. `docs/` and `runbooks/`
 stay repo-wide since they describe both apps; `data/` is backend runtime state.
 
+## Eval, CI & deploy
+
+- **D22 — Pydantic Evals: deterministic scorers + LLM judges, ground truth from the
+data.** The core-workflow eval (`evals/`) is mostly **deterministic** — entity
+resolution (exact id/MC match in answer+records), tool selection (structured-first
+policy), fact coverage, a no-fabrication guard, follow-up correctness, draft
+presence — so it's cheap, repeatable, and unit-testable offline (`tests/test_evals.py`
+with a stub task, no LLM). Two **LLM judges** (answer quality, draft factuality on
+the 2 draft cases) add the subjective 1–5 dimensions the brief asks for; they're
+opt-out (`--no-judges`) since they cost calls. 13 goldens grounded in real
+loads/carriers/lanes (incl. CONDITIONAL/null-authority compliance and a nonexistent
+MC). Native to the agent framework, so the typed `AgentResponse` flows straight in;
+DeepEval was the alternative if a richer hosted report were needed.
+- **D23 — CI is offline.** Every test uses `TestModel` + a fake embedder, so GitHub
+Actions runs ruff + mypy + pytest (backend) and tsc + build (frontend) on a fresh
+clone with **no API key and no DB** — fast, free, and deterministic. The live eval
+and live agent queries are run on demand with a key, not in CI.
+- **D24 — Pre-seeded deploy; the API never ingests on boot.** Ingestion is an offline
+CLI step run once against Supabase; the deployed backend only *reads* (D19's
+read-only sessions reinforce this). So deploy is just: point the FastAPI app and the
+Next.js UI at the seeded Postgres + each other via env. Backend at root deploys as
+`freight_agent.api.app:app`; frontend deploys from `frontend/` (D21). Avoids
+shipping the raw dataset or paying ingestion cost on cold starts.
+
 ## Tracking
 
 Commits use Conventional Commits and reference the relevant `Dn`; non-trivial

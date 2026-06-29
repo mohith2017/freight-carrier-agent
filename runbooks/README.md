@@ -6,6 +6,9 @@ virtualenv for you — no `activate` needed.
 
 > The deployed app is the primary deliverable; this guide is for running the
 > pipeline and agent locally.
+>
+> **Live:** UI → https://freight-carrier-agent.vercel.app  ·
+> API → https://freight-carrier-agent.fastapicloud.dev/docs
 
 ## Prerequisites
 
@@ -191,7 +194,41 @@ the full 274-email pipeline on real data, idempotency, cross-channel flagging,
 chunking/embedding (via a fake embedder), the agent's tools + hybrid retrieval +
 compliance gate, the agent wiring (via Pydantic AI's `TestModel`), and the API
 (query sync/SSE, supporting lookups, rate limiting — `TestModel` + a read-only
-deps override). Frontend: `cd frontend && npx tsc --noEmit && npm run build`.
+deps override), and the eval scorers (deterministic, stub task). Frontend:
+`cd frontend && npx tsc --noEmit && npm run build`.
+
+## Step 5 — Evaluation (needs API key)
+
+A Pydantic Evals harness scores the core workflow over 13 goldens grounded in the
+real data. It runs the **real agent** against the primary store, so set
+`OPENAI_API_KEY` (and `DATABASE_URL` to evaluate against Supabase).
+
+```bash
+uv run python -m evals.run                  # deterministic scorers + LLM judges
+uv run python -m evals.run --no-judges      # cheaper: skip the LLM judges
+uv run python -m evals.run --json evals/last_run.json   # also write JSON
+```
+
+You'll get a per-case table and averages for: entity resolution, tool selection,
+fact coverage, no-fabrication, follow-up correctness, draft presence, and (with
+judges) answer quality + draft factuality. Lower `--max-concurrency` if you hit
+rate limits. The deterministic scorers are covered offline by `tests/test_evals.py`.
+
+## Deploying (pre-seeded; the app never ingests on boot)
+
+Live: UI → https://freight-carrier-agent.vercel.app  ·
+API → https://freight-carrier-agent.fastapicloud.dev/docs
+
+1. **Seed Supabase once, locally** — with `DATABASE_URL` set, run Steps 1–2
+   (`init-db`, `load`, `ingest all`). The deployed backend just reads this.
+2. **Backend** — serve the ASGI app on FastAPI Cloud (`fastapi deploy`) or any
+   host (`uvicorn freight_agent.api.app:app`). Set `DATABASE_URL`,
+   `OPENAI_API_KEY`, and `CORS_ORIGINS=<deployed frontend URL>`.
+3. **Frontend** — on Vercel set Root Directory to `frontend/` and
+   `NEXT_PUBLIC_API_URL=<deployed backend URL>`; Next.js is auto-detected.
+
+CI (`.github/workflows/ci.yml`) runs ruff + mypy + pytest and the frontend build
+on every push — all offline, green on a fresh clone.
 
 ## Updating with a newer dataset
 
@@ -253,9 +290,3 @@ Postgres is primary and the local SQLite file is kept as an automatic backup
 - **Model availability** — models are configurable in `.env` (`AGENT_MODEL`,
   `EXTRACTION_MODEL`, `TRANSCRIBE_MODEL`, `EMBED_MODEL`); swap to
   `gpt-4o-transcribe` if diarization is unavailable.
-
-## Roadmap (not yet built)
-
-The Pydantic Evals run (goldens + scores) and the production deploys (FastAPI
-Cloud backend + Vercel frontend) land next; this guide will gain a section per
-step as they do.
