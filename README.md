@@ -30,13 +30,13 @@ flowchart LR
     pg -. mirror .-> sqlite[(SQLite local backup)]
   end
   subgraph backend [FastAPI on FastAPI Cloud]
-    api[/query /draft /loads /carriers /rates/]
+    api[/query SSE · loads · carriers · rates · health/]
     agent["Pydantic AI agent (gpt-5.5)"] --> router[structured-first retrieval]
     api --> agent
     router --> sql[structured SQL tools] --> pg
     router --> vec[pgvector + FTS + metadata boost] --> pg
   end
-  ui[Next.js UI on Vercel] -->|SSE| api
+  ui[Next.js chat UI on Vercel] -->|SSE| api
 ```
 
 **Data model.** Canonical carrier/load/rate/offers stay **relational**; only
@@ -80,9 +80,17 @@ uv run python -m freight_agent ask "Best rate on offer for load #29372289 vs mar
 uv run pytest
 ```
 
-The full **run-and-verify guide** (setup, expected output, Supabase, tests,
-troubleshooting) is in **[`runbooks/README.md`](runbooks/README.md)** — a single
-document so it's easy to follow end to end.
+Run the web app (FastAPI backend with SSE streaming + Next.js chat UI):
+
+```bash
+uv sync --extra dev --extra ai --extra pg --extra api
+uv run uvicorn freight_agent.api.app:app --reload --port 8000   # API at :8000/docs
+cd frontend && npm install && cp .env.example .env.local && npm run dev   # UI at :3000
+```
+
+The full **run-and-verify guide** (setup, expected output, the web app, Supabase,
+tests, troubleshooting) is in **[`runbooks/README.md`](runbooks/README.md)** — a
+single document so it's easy to follow end to end.
 
 ## Evaluation
 
@@ -104,9 +112,31 @@ The run-and-verify guide lives in [`runbooks/README.md`](runbooks/README.md).
 
 ## Repo layout
 
-- `freight_agent/` — package: `config`, `cli`, `rates`, `db/` (engine, models, schemas), `ingestion/`, `retrieval`, `tools`, `agent`
-- `docs/` — `DECISIONS.md`, `AI_ARTIFACTS.md`
-- `runbooks/` — single run/verify guide
-- `tests/` — test gates
-- `frontend/` — Next.js UI (added later)
-- `data/` — local SQLite store + cached transcripts (gitignored)
+Two deployables — a Python backend (the repo root *is* the backend project) and a
+Next.js frontend — plus repo-wide docs.
+
+```
+freight-carrier-agent/
+├── freight_agent/        # BACKEND — Python service (deploy: FastAPI Cloud)
+│   ├── api/              #   FastAPI app: app, deps, schemas
+│   ├── agent.py          #   Pydantic AI agent + typed tools
+│   ├── tools.py, retrieval.py, rates.py
+│   ├── ingestion/        #   email/call parse, extract, reconcile, embed
+│   ├── db/               #   engine, models, schemas (cross-dialect)
+│   └── cli.py            #   `freight` Typer CLI (ingestion + ask)
+├── tests/                # BACKEND — pytest gates
+├── pyproject.toml, uv.lock
+├── data/                 # BACKEND runtime — SQLite store + transcript cache (gitignored)
+│
+├── frontend/             # FRONTEND — Next.js 15 + TS chat UI (deploy: Vercel)
+│   ├── app/, components/, lib/
+│
+├── README.md             # repo-wide
+├── docs/                 # repo-wide — DECISIONS.md, AI_ARTIFACTS.md
+└── runbooks/             # repo-wide — single end-to-end run/verify guide
+```
+
+The backend lives at the root because it's the importable Python package
+(`freight_agent.api.app:app` for the API, `freight` for the CLI); the frontend is
+the one self-contained non-Python subproject. `docs/` and `runbooks/` describe both
+apps, so they stay repo-wide rather than inside either one.

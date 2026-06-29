@@ -104,6 +104,36 @@ clean re-seed.
 
 
 
+## Product surface (API + UI)
+
+- **D19 — FastAPI: read-only sessions, SSE streaming, in-app rate limit.** The public
+API only reads, so its Postgres connections set `default_transaction_read_only=on`
+on connect — a cheap, real guard that a buggy/compromised tool can't mutate the
+store through the web surface (writes happen only via the offline `freight` CLI).
+`POST /query` streams as SSE — a `status` event, then a `tool` event per tool call
+as the agent decides it (via `agent.iter()` graph nodes), then a typed `result`
+event — so the UI can show a live "what the agent is doing" trace; `/query/sync`
+returns the same payload in one shot for tests/eval. Cross-cutting: request-id +
+timing logs, CORS from settings, and a dependency-free per-IP fixed-window rate
+limit (fine for a low-traffic MVP; swap for Redis/`slowapi` at scale). The
+structured-output tool (`final_result`) is filtered out of the user-facing trace.
+- **D20 — Next.js 15 + TS, plain CSS, fetch-stream SSE.** EventSource is GET-only, so
+the client reads `POST /query`'s body with a `ReadableStream` reader and parses the
+`event:/data:` frames itself. The UI is intentionally minimal (the brief asks for a
+working minimum, not polish): example queries, live tool chips while streaming, an
+answer card (confidence bar, follow-up badge, supporting-record chips), a
+collapsible tool trace, evidence cards parsed from `search_communications` results,
+and an editable+copyable draft composer. No Tailwind/UI kit — one global stylesheet
+keeps the build dependency-light and the deploy trivial on Vercel.
+- **D21 — Backend at root, frontend in `frontend/`.** Two deployables: the Python
+service (FastAPI Cloud) and the Next.js UI (Vercel). Rather than a symmetric
+`backend/` + `frontend/` split, the importable Python package stays at the repo root
+(`freight_agent.api.app:app`, `freight` CLI) — idiomatic for Python and avoids
+churning pyproject/console-script/pytest paths — and the one non-Python subproject is
+boxed in `frontend/` (renamed from `web/`). The API is a subpackage (`freight_agent/api/`)
+because it shares the agent, tools, and db models with the CLI. `docs/` and `runbooks/`
+stay repo-wide since they describe both apps; `data/` is backend runtime state.
+
 ## Tracking
 
 Commits use Conventional Commits and reference the relevant `Dn`; non-trivial

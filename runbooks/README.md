@@ -137,6 +137,48 @@ Each answer prints the grounding record IDs, a confidence score, a follow-up fla
 The compliance gate surfaces non-ACTIVE authority or expired/missing insurance
 before suggesting a booking.
 
+## Step 4 — Run the web app (API + UI)
+
+The same agent is exposed over a FastAPI backend and a Next.js chat UI. The
+backend streams the answer over SSE (a `status` event, a `tool` event per tool
+call, then the typed result) and exposes supporting lookups.
+
+**Backend (FastAPI).** Needs the `api` extra:
+
+```bash
+uv sync --extra dev --extra ai --extra pg --extra api
+uv run uvicorn freight_agent.api.app:app --reload --port 8000
+```
+
+Quick checks (no API key needed for these):
+
+```bash
+curl localhost:8000/health
+curl localhost:8000/loads/29372289
+curl "localhost:8000/rates/context?origin=PA&destination=NJ&equipment=Box%20Truck&flat_usd=285&distance_miles=75"
+curl -N -X POST localhost:8000/query -H 'content-type: application/json' \
+  -d '{"question":"best rate on offer for load #29372289 vs market?"}'   # SSE; needs OPENAI_API_KEY
+```
+
+Endpoints: `POST /query` (SSE), `POST /query/sync` (one-shot JSON), `GET /health`,
+`GET /loads/{id}`, `GET /carriers/resolve?q=`, `GET /carriers/{id}/history`,
+`GET /rates/context`. Interactive docs at `http://localhost:8000/docs`. The API's
+DB sessions are read-only on Postgres; it only ever reads the store.
+
+**Frontend (Next.js).** In a second terminal:
+
+```bash
+cd frontend
+npm install
+cp .env.example .env.local        # NEXT_PUBLIC_API_URL=http://localhost:8000
+npm run dev                        # http://localhost:3000
+```
+
+Open `http://localhost:3000`, click an example query or type your own. You'll see
+live tool chips while the agent works, then the answer with a confidence bar,
+follow-up badge, supporting-record chips, a collapsible tool trace, evidence
+cards, and an editable/copyable draft when one is requested.
+
 ## Tests
 
 ```bash
@@ -147,7 +189,9 @@ All offline (no API calls): row counts and rate math, messy-field parsing,
 deterministic extractors, MC fuzzy-correction, the carrier-resolution cascade,
 the full 274-email pipeline on real data, idempotency, cross-channel flagging,
 chunking/embedding (via a fake embedder), the agent's tools + hybrid retrieval +
-compliance gate, and the agent wiring (via Pydantic AI's `TestModel`).
+compliance gate, the agent wiring (via Pydantic AI's `TestModel`), and the API
+(query sync/SSE, supporting lookups, rate limiting — `TestModel` + a read-only
+deps override). Frontend: `cd frontend && npx tsc --noEmit && npm run build`.
 
 ## Updating with a newer dataset
 
@@ -212,5 +256,6 @@ Postgres is primary and the local SQLite file is kept as an automatic backup
 
 ## Roadmap (not yet built)
 
-The FastAPI/Next.js product surface and the Pydantic Evals run land next; this
-guide will gain a section per step as they do.
+The Pydantic Evals run (goldens + scores) and the production deploys (FastAPI
+Cloud backend + Vercel frontend) land next; this guide will gain a section per
+step as they do.
