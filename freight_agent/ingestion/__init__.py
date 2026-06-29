@@ -1,1 +1,1 @@
-"""Ingestion pipeline: structured-artifact loaders, plus email/call extraction."""
+"""Multi-modal ingestion: structured loaders, email/call extraction, reconciliation, embedding."""
