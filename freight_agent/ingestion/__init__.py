@@ -1,0 +1,1 @@
+"""Ingestion pipeline: structured-artifact loaders, plus email/call extraction."""

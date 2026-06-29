@@ -1,0 +1,53 @@
+[project]
+name = "freight-agent"
+version = "0.1.0"
+description = "Goodlane freight carrier intake assistant - ingestion, agent, and API."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+# Postgres / Supabase target (optional; default store is SQLite)
+pg = ["psycopg[binary]>=3.1", "pgvector>=0.3"]
+# LLM + embeddings + transcription
+ai = ["openai>=1.40", "pydantic-ai>=0.0.14"]
+# Backend API
+api = ["fastapi>=0.111", "uvicorn[standard]>=0.30", "sse-starlette>=2.1"]
+# Dev tooling
+dev = ["pytest>=8.2", "ruff>=0.5", "mypy>=1.10"]
+
+[project.scripts]
+freight = "freight_agent.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["freight_agent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+plugins = []
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.uv]
+package = true
