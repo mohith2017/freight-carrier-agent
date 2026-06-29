@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from freight_agent.config import Settings
-from freight_agent.db import target_urls
-from freight_agent.db.models import Carrier, Load, RateHistory
+from freight_agent.config import Settings, get_settings
+from freight_agent.db import init_schema, make_engine, session_factory, target_urls
+from freight_agent.db.models import Carrier, CommEvent, Load, Offer, RateHistory
+from freight_agent.ingestion.loaders import load_carriers, load_loads
 from freight_agent.rates import assess_offer, flat_to_per_mile
 
 
@@ -89,3 +92,48 @@ def test_empty_db_url_falls_back_to_sqlite() -> None:
     s = Settings(database_url="", sqlite_path="data/freight.db")
     assert s.primary_url.startswith("sqlite:///")
     assert s.uses_postgres is False
+
+
+def test_load_carriers_self_heals_duplicates(tmp_path: Path) -> None:
+    dataset = get_settings().dataset_path
+    engine = make_engine(f"sqlite:///{tmp_path / 'dupes.db'}")
+    init_schema(engine)
+    Session = session_factory(engine)
+
+    with Session() as s:
+        load_loads(s, dataset)
+        load_carriers(s, dataset)
+        assert s.scalar(select(func.count()).select_from(Carrier)) == 48
+
+        originals = list(s.scalars(select(Carrier)))
+        dup_id_for_mc = {}
+        for c in originals:
+            dup = Carrier(
+                mc_number=c.mc_number,
+                email=c.email,
+                company_name=c.company_name,
+                authority_status=c.authority_status,
+                profile_raw=c.profile_raw,
+            )
+            s.add(dup)
+            s.flush()
+            dup_id_for_mc[c.mc_number] = dup.carrier_id
+        assert s.scalar(select(func.count()).select_from(Carrier)) == 96
+
+        mc, dup_id = next(
+            (mc, i) for mc, i in dup_id_for_mc.items() if mc is not None
+        )
+        ev = CommEvent(source_type="email", source_id="x1", carrier_id=dup_id)
+        s.add(ev)
+        s.flush()
+        s.add(Offer(event_id=ev.event_id, carrier_id=dup_id))
+        s.commit()
+
+        load_carriers(s, dataset)
+        assert s.scalar(select(func.count()).select_from(Carrier)) == 48
+        assert s.get(Carrier, dup_id) is None
+        survivor = s.scalars(select(Carrier).where(Carrier.mc_number == mc)).one()
+        relinked = s.scalars(
+            select(CommEvent).where(CommEvent.source_id == "x1")
+        ).one()
+        assert relinked.carrier_id == survivor.carrier_id

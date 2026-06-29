@@ -266,10 +266,14 @@ def test_embed_events_writes_chunks(ingest_engine: Engine) -> None:
 
 
 def test_carrier_business_key_priority() -> None:
-    assert carrier_business_key("MC-12 3", "x@y.com", "Acme Inc", 1) == "mc:123"
-    assert carrier_business_key(None, "X@Y.com", "Acme Inc", 1) == "email:x@y.com"
-    assert carrier_business_key(None, None, "Acme Inc", 1) == "name:acme inc"
-    assert carrier_business_key(None, None, None, 5) == "row:5"
+    assert carrier_business_key("MC-12 3", "x@y.com", "Acme Inc") == "mc:123"
+    assert carrier_business_key(None, "X@Y.com", "Acme Inc") == "email:x@y.com"
+    assert carrier_business_key(None, None, "Acme Inc") == "name:acme inc"
+    raw = {"company_name": None, "phone": "555"}
+    k1 = carrier_business_key(None, None, None, raw)
+    k2 = carrier_business_key(None, None, None, dict(raw))
+    assert k1 == k2 and k1.startswith("raw:")
+    assert carrier_business_key(None, None, None, {"phone": "999"}) != k1
 
 
 def _write_carriers(ds: Path, carriers: list[dict]) -> None:

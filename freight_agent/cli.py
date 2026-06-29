@@ -1,15 +1,5 @@
 """
 Typer CLI for the freight agent pipeline.
-
-Current supported commands:
-  freight init-db          create schema on all target stores
-  freight load             load structured artifacts into all target stores
-  freight verify           report row counts + a sample flat->per-mile rate check
-  freight ingest all       run the whole pipeline (emails->calls->reconcile->embed)
-  freight ingest emails    parse carrier_emails.json -> comm_events + offers
-  freight ingest calls     transcribe + extract call recordings (cached)
-  freight reconcile        link comm_events to carriers/loads, flag cross-channel
-  freight embed            chunk + embed communications into knowledge_chunks
 """
 
 from __future__ import annotations
@@ -326,6 +316,35 @@ def verify_ingest() -> None:
         ]:
             table.add_row(name, str(val or 0))
     console.print(table)
+
+
+@app.command("ask")
+def ask(
+    question: str = typer.Argument(..., help="A broker question for the agent."),
+    model: str = typer.Option(
+        "", "--model", help="Override agent model (default: settings.agent_model)."
+    ),
+) -> None:
+    settings = get_settings()
+    if not settings.openai_api_key:
+        console.print("[red]ask requires OPENAI_API_KEY[/red]")
+        raise typer.Exit(code=1)
+
+    from freight_agent.agent import run_agent
+
+    with console.status("[cyan]thinking…[/cyan]"):
+        resp = run_agent(question, model=model or None)
+
+    console.print(f"\n[bold]{resp.answer}[/bold]\n")
+    if resp.supporting_records:
+        console.print(f"[dim]records:[/dim] {', '.join(resp.supporting_records)}")
+    console.print(
+        f"[dim]confidence:[/dim] {resp.confidence:.2f}  "
+        f"[dim]follow-up:[/dim] {resp.follow_up_needed}"
+    )
+    if resp.draft_email:
+        console.print("\n[bold cyan]Draft email[/bold cyan]")
+        console.print(resp.draft_email)
 
 
 if __name__ == "__main__":

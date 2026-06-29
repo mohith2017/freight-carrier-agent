@@ -3,13 +3,18 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from freight_agent.config import Settings, get_settings
 from freight_agent.db.models import Base
 
 _PG_INSERT_PAGE_SIZE = 20
+
+
+_PG_CONNECT_TIMEOUT = 10
+_PG_STATEMENT_TIMEOUT_MS = 30_000
+_PG_LOCK_TIMEOUT_MS = 10_000
 
 
 def _ensure_sqlite_dir(url: str) -> None:
@@ -40,18 +45,28 @@ def make_engine(url: str) -> Engine:
             url, future=True, connect_args={"check_same_thread": False}
         )
 
-    return create_engine(
+    engine = create_engine(
         url,
         future=True,
         pool_pre_ping=True,
         insertmanyvalues_page_size=_PG_INSERT_PAGE_SIZE,
         connect_args={
+            "connect_timeout": _PG_CONNECT_TIMEOUT,
             "keepalives": 1,
             "keepalives_idle": 30,
             "keepalives_interval": 10,
             "keepalives_count": 5,
         },
     )
+
+    @event.listens_for(engine, "connect")
+    def _set_pg_timeouts(dbapi_conn, _record):
+        with dbapi_conn.cursor() as cur:
+            cur.execute(f"SET statement_timeout = {_PG_STATEMENT_TIMEOUT_MS}")
+            cur.execute(f"SET lock_timeout = {_PG_LOCK_TIMEOUT_MS}")
+        dbapi_conn.commit()
+
+    return engine
 
 
 def primary_engine(settings: Settings | None = None) -> Engine:

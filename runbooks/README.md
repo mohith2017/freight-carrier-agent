@@ -119,6 +119,24 @@ uv run python -m freight_agent verify-ingest
 ```
 </details>
 
+## Step 3 — Ask the agent (needs API key)
+
+The agent (Pydantic AI, `gpt-5.5`) answers broker questions over the ingested
+data using seven typed tools (load lookup, carrier resolution, rate context,
+hybrid comms search, best offer, lane availability) with structured-first routing
+and a compliance gate.
+
+```bash
+uv run python -m freight_agent ask "What is the best rate on offer for load #29372289, and how does it compare to market?"
+uv run python -m freight_agent ask "Which carriers have confirmed availability for PA to DE Box Truck loads?"
+uv run python -m freight_agent ask "Draft a reply to the carrier with the best rate on load #29372289 confirming next steps."
+```
+
+Each answer prints the grounding record IDs, a confidence score, a follow-up flag
+(true when data is missing/ambiguous), and a draft email when one is requested.
+The compliance gate surfaces non-ACTIVE authority or expired/missing insurance
+before suggesting a booking.
+
 ## Tests
 
 ```bash
@@ -128,7 +146,8 @@ uv run pytest
 All offline (no API calls): row counts and rate math, messy-field parsing,
 deterministic extractors, MC fuzzy-correction, the carrier-resolution cascade,
 the full 274-email pipeline on real data, idempotency, cross-channel flagging,
-and chunking/embedding (via a fake embedder).
+chunking/embedding (via a fake embedder), the agent's tools + hybrid retrieval +
+compliance gate, and the agent wiring (via Pydantic AI's `TestModel`).
 
 ## Updating with a newer dataset
 
@@ -193,5 +212,5 @@ Postgres is primary and the local SQLite file is kept as an automatic backup
 
 ## Roadmap (not yet built)
 
-Agent + tools, FastAPI/Next.js product surface, and the Pydantic Evals run land
-next; this guide will gain a section per step as they do.
+The FastAPI/Next.js product surface and the Pydantic Evals run land next; this
+guide will gain a section per step as they do.

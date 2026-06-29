@@ -1,177 +1,111 @@
 # Decision Log
 
-An ADR-style running log of the meaningful decisions on this project: the
-context, the choice, the alternatives considered, and the trade-off. It is
-written as the build progresses (not reconstructed at the end), so it doubles as
-the "documentation of decisions" deliverable.
-
-Format per entry: **Context → Decision → Alternatives → Trade-off / what I'd
-improve.** Most recent first within each phase.
-
----
+Meaningful decisions, written as the build progressed. Each is one line of
+**decision → why / trade-off**. This is the "documentation of decisions"
+deliverable.
 
 ## Data store & vendor
 
-### D1 — Supabase Postgres + `pgvector` as the primary store, SQLite as local backup
-- **Context.** The high-value broker questions ("best rate on load #X", "who's
-  available Friday on this lane", compliance status) are relational/aggregate;
-  semantic search is only needed for supporting evidence (email bodies, call
-  utterances) and drafting tone.
-- **Decision.** One managed Postgres holds both the normalized system-of-record
-  **and** the vector index (`pgvector`). A SQLite mirror is written in parallel
-  so ingestion can run fully offline and the structured data is portable and
-  committable.
-- **Alternatives.** A dedicated vector DB (Qdrant / Chroma / Pinecone /
-  Weaviate) alongside Postgres.
-- **Trade-off.** For ~329 documents a separate vector service is pure operational
-  overhead (second store to deploy, sync, and keep consistent). `pgvector`
-  comfortably covers this scale, and keeping vectors next to the relational rows
-  means joins/filters (by `load_id`, `carrier_id`, lane) happen in one query.
-  At much larger scale a purpose-built ANN store would win.
+- **D1 — Supabase Postgres +** `pgvector` **primary, SQLite mirror.** Broker questions
+are relational/aggregate, semantic search only supports evidence; one store for
+rows + vectors means single-query joins by `load_id`/`carrier_id`/lane. A
+dedicated vector DB is pure ops overhead at ~329 docs (revisit past large scale).
+- **D2 — Single vendor (OpenAI) for agent + STT + embeddings.** One key/SDK/bill.
+Costs marginal STT accuracy, which the brief explicitly doesn't require.
 
-### D2 — Single vendor (OpenAI) for agent + transcription + embeddings
-- **Decision.** OpenAI for everything: one API key, one SDK, one bill, one set
-  of failure modes to reason about.
-- **Alternatives.** Best-of-breed per task (e.g. ElevenLabs Scribe / Deepgram
-  Nova for STT, a different LLM for the agent).
-- **Trade-off.** Slightly less than absolute-best transcription accuracy, which
-  the brief explicitly does not require ("Perfect transcription accuracy" is a
-  non-goal). Simplicity and demo reliability win here.
 
----
 
-## Models (verified GA as of Jun 28, 2026)
+## Models (GA as of Jun 28, 2026)
 
-### D3 — Model selection
-- **Agent:** `gpt-5.5` — latest *generally available* flagship. (GPT-5.6 shipped
-  Jun 26 but is limited-preview to a handful of vetted partners, **not GA** —
-  cannot use it.) `gpt-5.4` is the cheaper fallback if cost matters.
-- **Extraction:** `gpt-5.4-mini` — cheap, fast, strict structured outputs; the
-  right tier for high-volume deterministic-ish extraction across 329 docs.
-- **Transcription:** `gpt-4o-transcribe-diarize` — adds speaker labels, ideal
-  for 2-party broker/carrier calls with cross-talk; ~$0.006/min so the whole
-  55-file corpus costs a few cents.
-- **Embeddings:** `text-embedding-3-small` (1536 dims) — current default; corpus
-  is tiny so `3-large` is unnecessary.
+- **D3 — Tiers:** agent `gpt-5.5` (latest GA flagship; 5.6 is preview-only),
+extraction `gpt-5.4-mini` (cheap strict JSON ×329), transcription
+`gpt-4o-transcribe-diarize` (speaker labels, ~cents for 55 files), embeddings
+`text-embedding-3-small` (1536-dim, plenty for this corpus).
 
----
 
-## Agent & tools
 
-### D4 — Pydantic AI native typed tools, **not** FastMCP
-- **Context.** The agent needs tool calls (load lookup, carrier resolution, rate
-  context, comms search). The user initially considered FastMCP.
-- **Decision.** Native Pydantic AI typed function tools in-process.
-- **Alternatives.** FastMCP / MCP transport between agent and tools.
-- **Trade-off.** MCP adds a transport hop and a live-demo failure surface for
-  zero benefit when agent and tools share one process. Typed deps + validated
-  args/outputs are exactly what guards against fabricated load IDs or compliance
-  status. FastMCP remains an optional sidecar if we later want to expose the
-  same tools to external MCP clients (possible live-extension flair).
+## Agent & retrieval
 
----
+- **D4 — Pydantic AI native typed tools, not FastMCP.** Agent and tools share a
+process, so MCP adds only a transport hop + demo failure surface; typed
+deps/outputs are the guard against fabricated IDs. FastMCP stays an optional
+sidecar.
+- **D13 — In-app hybrid retrieval scoring, not SQL-side ANN/FTS.**
+`0.55·vector + 0.25·lexical + 0.20·metadata_boost` in Python over ~1.8k chunks:
+sub-ms, identical on SQLite/Postgres, offline-testable. SQL-side pgvector/FTS is
+the scale path (with D12's HNSW past ~10k rows).
+- **D14 — Session-per-tool-call.** Pydantic AI runs sync tools in worker threads;
+sharing one `Session` threw `IllegalStateChangeError` live, so `AgentDeps` holds
+a `sessionmaker` and each tool opens its own. Tool fns still take a `Session` to
+stay unit-testable.
+- **D18 — Numpy-safe cosine in retrieval.** `pgvector` returns embeddings as numpy
+arrays, so `if not vec` in `cosine()` raised "truth value of an array is
+ambiguous" — `search_communications` crashed on every Postgres run while offline
+list-based tests passed. Fixed by coercing operands to float lists and using
+explicit `is None`/`len()` checks; added regression tests with numpy arrays.
+- **D15 — Structured-first routing + compliance gate + typed** `AgentResponse`**.**
+Load/MC/lane/date ⇒ SQL tool before semantic search; surface non-ACTIVE
+authority / expired insurance before suggesting booking; return
+answer/records/confidence/follow_up/draft. Verified live: a `delivered` load set
+`follow_up_needed=true` instead of inventing a confirmation.
+
+
 
 ## Ingestion & data quality
 
-### D5 — Deterministic parse first, LLM extraction second
-- **Decision.** Run a cheap, auditable regex pass (MC numbers, `$rate` in body,
-  load refs, dates, equipment) before sending to `gpt-5.4-mini` for structured
-  extraction with confidence + evidence spans. Prompt rule: prefer `null` over
-  guessing; record ambiguity, never invent identity/rate.
-- **Why.** `carrier_emails.json` has `rate_quoted_usd` **null on all 274** rows —
-  the rate lives in free-text bodies ("We could do $735"), so the field can
-  never be trusted and the body must be parsed. Deterministic-first keeps the
-  common cases cheap and traceable; the LLM handles the messy tail.
+- **D5 — Deterministic parse first, LLM second.** Regex pulls MC/`$rate`/refs/dates
+before `gpt-5.4-mini` (prompt rule: prefer `null`, never invent). Needed because
+`rate_quoted_usd` is null on all 274 emails — the rate lives in free text.
+- **D6 — Carrier identity by stable business key + upsert (FK-safe).** Re-`load`
+threw FK violations (delete+insert orphaned reconciled `comm_events`). Loaders
+now upsert `loads` by `load_id` and `carriers` by MC→email→name→content-hash, so
+`carrier_id` is preserved and re-loading a newer dataset converges.
+- **D7 —** `--incremental` **ingestion.** Process only new emails/WAVs/unembedded
+events so folding in a newer dataset doesn't re-transcribe/re-embed; full rebuild
+stays the default.
+- **D16 — Self-healing carrier load.** Source nulls are intentional and preserved
+verbatim (we never fabricate). But Supabase had drifted to 96 carriers (every row
+duplicated by an early pre-upsert load) while SQLite held the correct 48.
+`load_carriers` now collapses duplicates by business key — keeps the lowest
+`carrier_id`, repoints `comm_events`/`offers` FKs, deletes orphans — and fully-null
+carriers dedupe on a content hash, so a plain `freight load` self-heals. Verified
+live: 96→48, 0 duplicate MCs, 0 orphaned FKs, links preserved.
 
-### D6 — Carrier identity by stable business key + upsert (FK-safe re-runs)
-- **Context.** Re-running `load` after ingestion threw
-  `ForeignKeyViolation: comm_events_carrier_id_fkey` / `..._load_id_fkey`,
-  because loaders did `DELETE` + `INSERT` and reconciliation had already linked
-  `comm_events` to those parent rows. A follow-up interview scenario ("re-load
-  with a newer dataset") would hit this immediately.
-- **Decision.** Loaders now **upsert**: `loads` by natural key (`load_id`);
-  `carriers` by a `carrier_business_key` (MC → email → company name → file
-  position). Existing rows are updated in place (surrogate `carrier_id`
-  preserved); unseen rows are inserted. No deletes, so reconciled
-  `comm_events` links are never orphaned.
-- **Alternatives.** Truncate-and-reload (simple but destroys FK links and any
-  reconciliation work); `ON CONFLICT` raw SQL (less portable across the
-  SQLite/Postgres dialects we dual-write to).
-- **Trade-off.** Slightly more code than delete+insert, but it makes re-loading
-  an updated/expanded dataset converge correctly — which is the realistic
-  operational requirement.
 
-### D7 — Incremental ingestion mode
-- **Decision.** `--incremental` flags on `ingest emails`, `ingest calls`,
-  `embed`, and `ingest all` process only new records (new email IDs, new WAV
-  stems, events lacking chunks).
-- **Why.** Folding in a newer dataset shouldn't re-transcribe 55 calls or
-  re-embed 329 chunks (cost + time). Full rebuild remains the default for a
-  clean slate.
-
----
 
 ## Persistence resilience
 
-### D8 — Harden embedding writes against the Supabase pooler
-- **Context.** The `embed` step intermittently died with
-  `OperationalError: SSL error: ssl/tls alert bad record mac` mid-run. Cause:
-  one ~2 MB `INSERT … VALUES` per 64-row batch (each row carries a ~30 KB
-  1536-dim vector string) stressing the pooled TLS connection; a single hiccup
-  aborted the whole pipeline with no retry.
-- **Decision.** Defense in depth:
-  (a) Postgres engine uses `pool_pre_ping=True`, TCP keepalives, and
-  `insertmanyvalues_page_size=20` so each round-trip is small;
-  (b) embed writes go out in 20-row batches that catch transient
-  `OperationalError`/`DBAPIError`, roll back, **dispose the poisoned
-  connection**, back off, and retry (up to 4×).
-- **Trade-off.** More, smaller INSERTs (marginally slower) in exchange for a run
-  that self-heals instead of failing on a network blip.
-- **What I'd improve.** The deeper fix is the connection target: Supabase's
-  *transaction pooler* (6543) is hostile to large/prepared statements. Switching
-  `DATABASE_URL` to the *session pooler* (5432) or direct connection — or setting
-  `prepare_threshold=None` for the pooler — would remove the root cause.
+- **D8 — Harden embed writes against the Supabase pooler.** Big per-batch vector
+INSERTs intermittently died with `ssl/tls alert bad record mac`. Fix:
+`pool_pre_ping` + keepalives + `insertmanyvalues_page_size=20`, plus 20-row
+batched writes that dispose the poisoned connection and retry (4×). Deeper fix:
+use the session pooler / `prepare_threshold=None`.
+- **D12 — Defer HNSW index.** At ~1.8k chunks exact KNN is sub-ms with perfect
+recall; HNSW (approximate) only pays off past ~10k rows.
+- **D17 — Fail-fast DB timeouts.** A draft-email `ask` once hung 13+ min (0% CPU,
+blocked on I/O) when it collided with a concurrent `load`'s row locks — the
+pooler's default `lock_timeout` is 0 (wait forever). Supabase's pooler ignores
+libpq `options`, so timeouts are now applied via a `SET` on each new connection:
+`statement_timeout=30s`, `lock_timeout=10s`, plus `connect_timeout=10s`. A stuck
+query/lock now aborts in seconds instead of wedging the agent — important for the
+live demo.
 
-### D12 — Defer HNSW index on `knowledge_chunks`
-- **Decision.** Skip HNSW at ~1.8k chunks: exact pgvector KNN is sub-millisecond with perfect recall; HNSW is approximate and only worth adding past ~10k rows (with tuned `m` / `ef_construction`).
 
----
 
 ## Project structure & migrations
 
-### D9 — `freight_agent/db/` package
-- **Decision.** Database concerns live under `freight_agent/db/`:
-  `engine.py` (engine/session/init helpers), `models.py` (ORM tables),
-  `schemas.py` (Pydantic input validation), with `db/__init__.py` re-exporting
-  the engine helpers so `from freight_agent.db import make_engine, …` still
-  works. `reconcile.py`/`loaders.py` live under `ingestion/` as pipeline steps.
-- **Why.** Clear separation: `db` = how to talk to the store, `db.models` =
-  tables, `db.schemas` = validation; ingestion = the multi-modal pipeline.
+- **D9 —** `freight_agent/db/` **package.** `engine.py` / `models.py` / `schemas.py`
+with `__init__` re-exports; `reconcile.py`/`loaders.py` live under `ingestion/`.
+- **D10 —** `create_all` **now, Alembic later.** Fine for a fresh `init-db`; doesn't
+migrate an existing schema — known limitation, add Alembic autogenerate beyond a
+clean re-seed.
+- **D11 —** `uv` **+ single runbook.** Faster lock-based tooling; one
+`runbooks/README.md` is easier to follow end-to-end than per-phase files.
 
-### D10 — `create_all` now, Alembic noted as an improvement
-- **Decision.** Schema is created with SQLAlchemy `Base.metadata.create_all` via
-  `init_schema`; **Alembic is not wired in.**
-- **Why.** For an MVP with a fresh `init-db`, `create_all` is enough, and the
-  cross-dialect (Postgres + SQLite) models stay the single source of truth.
-- **What I'd improve.** `create_all` does not migrate an existing schema (no
-  column adds, no down-migrations). For anything beyond a clean re-seed, add
-  Alembic with autogenerate. Called out explicitly as a known limitation /
-  talking point.
 
-### D11 — Tooling: `uv`, single-document runbook
-- **Decision.** `uv` for all dependency/venv/run commands (replacing `pip`); a
-  single consolidated `runbooks/README.md` instead of per-phase runbooks.
-- **Why.** `uv` is faster and lock-based; one runbook is far easier for an
-  interviewer to follow end-to-end than five files.
 
----
+## Tracking
 
-## How decisions, issues & PRs are tracked
-
-- **This file** is the canonical decision record.
-- **Commits** follow Conventional Commits (`feat:`, `fix:`, `refactor:`); each
-  decision-bearing change references its rationale here (e.g. *D6* → the carrier
-  upsert commit).
-- When a change is non-trivial it goes through a PR whose description links back
-  to the relevant `Dn` entry, so the "issues / docs / PRs" trail is coherent
-  rather than scattered.
+Commits use Conventional Commits and reference the relevant `Dn`; non-trivial
+changes go through PRs that link back here, so the issues/docs/PRs trail stays
+coherent.

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 from pathlib import Path
 
-from sqlalchemy import Engine, delete, select
+from sqlalchemy import Engine, delete, select, update
 from sqlalchemy.orm import Session
 
-from freight_agent.db.models import Carrier, Load, RateHistory
+from freight_agent.db.models import Carrier, CommEvent, Load, Offer, RateHistory
 from freight_agent.db.schemas import CarrierIn, LoadIn, RateRowIn
 
 
@@ -21,7 +22,7 @@ def carrier_business_key(
     mc_number: str | None,
     email: str | None,
     company_name: str | None,
-    fallback_idx: int | None = None,
+    raw: dict | None = None,
 ) -> str:
     if mc_number:
         digits = re.sub(r"\D", "", str(mc_number))
@@ -31,7 +32,8 @@ def carrier_business_key(
         return f"email:{email.strip().lower()}"
     if company_name and company_name.strip():
         return f"name:{company_name.strip().lower()}"
-    return f"row:{fallback_idx}"
+    payload = json.dumps(raw or {}, sort_keys=True, default=str)
+    return "raw:" + hashlib.md5(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def load_loads(session: Session, dataset_dir: Path) -> int:
@@ -54,20 +56,43 @@ def load_rate_history(session: Session, dataset_dir: Path) -> int:
     return len(rows)
 
 
+def _collapse_duplicate_carriers(session: Session) -> dict[str, Carrier]:
+    groups: dict[str, list[Carrier]] = {}
+    for c in session.scalars(select(Carrier)):
+        key = carrier_business_key(c.mc_number, c.email, c.company_name, c.profile_raw)
+        groups.setdefault(key, []).append(c)
+
+    survivors: dict[str, Carrier] = {}
+    for key, members in groups.items():
+        members.sort(key=lambda c: c.carrier_id)
+        keeper, *dupes = members
+        survivors[key] = keeper
+        for dup in dupes:
+            session.execute(
+                update(CommEvent)
+                .where(CommEvent.carrier_id == dup.carrier_id)
+                .values(carrier_id=keeper.carrier_id)
+            )
+            session.execute(
+                update(Offer)
+                .where(Offer.carrier_id == dup.carrier_id)
+                .values(carrier_id=keeper.carrier_id)
+            )
+            session.delete(dup)
+    if any(len(m) > 1 for m in groups.values()):
+        session.flush()
+    return survivors
+
+
 def load_carriers(session: Session, dataset_dir: Path) -> int:
     raw_list = json.loads((dataset_dir / "carrier_profiles.json").read_text(encoding="utf-8"))
 
-    existing = list(session.scalars(select(Carrier)))
-    by_key: dict[str, Carrier] = {}
-    for c in existing:
-        by_key.setdefault(
-            carrier_business_key(c.mc_number, c.email, c.company_name, c.carrier_id), c
-        )
+    by_key = _collapse_duplicate_carriers(session)
 
-    for idx, raw in enumerate(raw_list, start=1):
+    for raw in raw_list:
         parsed = CarrierIn.model_validate(raw)
         key = carrier_business_key(
-            parsed.mc_number, parsed.email, parsed.company_name, idx
+            parsed.mc_number, parsed.email, parsed.company_name, raw
         )
         fields = parsed.model_dump()
         obj = by_key.get(key)

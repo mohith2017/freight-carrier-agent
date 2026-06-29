@@ -76,6 +76,7 @@ Load the relational core, then run the full ingestion pipeline:
 uv run python -m freight_agent init-db
 uv run python -m freight_agent load          # 50 loads / 48 carriers / 720 rates
 uv run python -m freight_agent ingest all    # emails -> calls -> reconcile -> embed
+uv run python -m freight_agent ask "Best rate on offer for load #29372289 vs market?"
 uv run pytest
 ```
 
@@ -103,7 +104,7 @@ The run-and-verify guide lives in [`runbooks/README.md`](runbooks/README.md).
 
 ## Repo layout
 
-- `freight_agent/` — package: `config`, `cli`, `rates`, `db/` (engine, models, schemas), `ingestion/`
+- `freight_agent/` — package: `config`, `cli`, `rates`, `db/` (engine, models, schemas), `ingestion/`, `retrieval`, `tools`, `agent`
 - `docs/` — `DECISIONS.md`, `AI_ARTIFACTS.md`
 - `runbooks/` — single run/verify guide
 - `tests/` — test gates
