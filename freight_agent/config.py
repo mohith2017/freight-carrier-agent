@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     dataset_dir: str = Field(default="../goodlane-interview-dataset")
     database_url: str = Field(default="")
     sqlite_path: str = Field(default="data/freight.db")
+    transcripts_dir: str = Field(default="data/transcripts")
 
     openai_api_key: str = Field(default="")
     agent_model: str = Field(default="gpt-5.5")
@@ -45,6 +46,10 @@ class Settings(BaseSettings):
     @property
     def dataset_path(self) -> Path:
         return _resolve(self.dataset_dir)
+
+    @property
+    def transcripts_path(self) -> Path:
+        return _resolve(self.transcripts_dir)
 
     @property
     def sqlite_url(self) -> str:

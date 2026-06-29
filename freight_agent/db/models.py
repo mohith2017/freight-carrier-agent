@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     JSON,
@@ -15,6 +15,10 @@ from sqlalchemy import (
     types,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -122,7 +126,7 @@ class CommEvent(Base):
     extracted: Mapped[dict | None] = mapped_column(JSON)
     confidence: Mapped[float | None] = mapped_column(Float)
     raw_payload: Mapped[dict | None] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     offers: Mapped[list[Offer]] = relationship(back_populates="event")
     chunks: Mapped[list[KnowledgeChunk]] = relationship(back_populates="event")
@@ -142,7 +146,7 @@ class Offer(Base):
     intent: Mapped[str | None] = mapped_column(String)
     questions: Mapped[list | None] = mapped_column(JSON)
     offer_status: Mapped[str | None] = mapped_column(String)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     event: Mapped[CommEvent] = relationship(back_populates="offers")
 
@@ -156,6 +160,6 @@ class KnowledgeChunk(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     meta: Mapped[dict | None] = mapped_column("metadata", JSON)
     embedding: Mapped[list | None] = mapped_column(VectorType(1536))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     event: Mapped[CommEvent | None] = relationship(back_populates="chunks")

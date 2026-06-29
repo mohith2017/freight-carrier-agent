@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from freight_agent.config import Settings
 from freight_agent.db import target_urls
-from freight_agent.models import Carrier, Load, RateHistory
+from freight_agent.db.models import Carrier, Load, RateHistory
 from freight_agent.rates import assess_offer, flat_to_per_mile
 
 

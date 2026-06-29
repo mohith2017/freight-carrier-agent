@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from freight_agent.config import Settings, get_settings
-from freight_agent.models import Base
+from freight_agent.db.models import Base
+
+_PG_INSERT_PAGE_SIZE = 20
 
 
 def _ensure_sqlite_dir(url: str) -> None:
@@ -15,10 +18,40 @@ def _ensure_sqlite_dir(url: str) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _check_postgres_driver(url: str) -> None:
+    if not url.startswith("postgresql"):
+        return
+    if importlib.util.find_spec("psycopg") is None:
+        raise RuntimeError(
+            "DATABASE_URL points to Postgres, but the psycopg driver is not "
+            "installed in this environment.\n"
+            "Fix one of:\n"
+            "  • install the driver:  uv sync --extra pg   (or add --extra ai --extra dev)\n"
+            "  • or use local SQLite:  unset DATABASE_URL in .env"
+        )
+
+
 def make_engine(url: str) -> Engine:
     _ensure_sqlite_dir(url)
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    return create_engine(url, future=True, connect_args=connect_args)
+    _check_postgres_driver(url)
+
+    if url.startswith("sqlite"):
+        return create_engine(
+            url, future=True, connect_args={"check_same_thread": False}
+        )
+
+    return create_engine(
+        url,
+        future=True,
+        pool_pre_ping=True,
+        insertmanyvalues_page_size=_PG_INSERT_PAGE_SIZE,
+        connect_args={
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        },
+    )
 
 
 def primary_engine(settings: Settings | None = None) -> Engine:
