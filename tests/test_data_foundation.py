@@ -11,6 +11,8 @@ from freight_agent.db.models import Carrier, CommEvent, Load, Offer, RateHistory
 from freight_agent.ingestion.loaders import load_carriers, load_loads
 from freight_agent.rates import assess_offer, flat_to_per_mile
 
+from .conftest import requires_dataset
+
 
 def test_row_counts(session: Session) -> None:
     assert session.scalar(select(func.count()).select_from(Load)) == 50
@@ -94,6 +96,7 @@ def test_empty_db_url_falls_back_to_sqlite() -> None:
     assert s.uses_postgres is False
 
 
+@requires_dataset
 def test_load_carriers_self_heals_duplicates(tmp_path: Path) -> None:
     dataset = get_settings().dataset_path
     engine = make_engine(f"sqlite:///{tmp_path / 'dupes.db'}")

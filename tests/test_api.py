@@ -19,6 +19,8 @@ from freight_agent.db import init_schema, make_engine, session_factory
 from freight_agent.db.models import Carrier, Load
 from freight_agent.ingestion.loaders import load_all
 
+from .conftest import dataset_available
+
 _DIM = 32
 
 
@@ -35,6 +37,8 @@ class FakeEmbedder:
 
 @pytest.fixture(scope="module")
 def resources(tmp_path_factory: pytest.TempPathFactory) -> Resources:
+    if not dataset_available():
+        pytest.skip("raw dataset not present (set DATASET_DIR to run dataset-backed tests)")
     db_path = tmp_path_factory.mktemp("apidb") / "api.db"
     engine = make_engine(f"sqlite:///{db_path}")
     init_schema(engine)

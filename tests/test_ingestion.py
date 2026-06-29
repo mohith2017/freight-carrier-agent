@@ -30,9 +30,13 @@ from freight_agent.ingestion.reconcile import (
     resolve_carrier,
 )
 
+from .conftest import dataset_available
+
 
 @pytest.fixture
 def ingest_engine(tmp_path: Path) -> Engine:
+    if not dataset_available():
+        pytest.skip("raw dataset not present (set DATASET_DIR to run dataset-backed tests)")
     engine = make_engine(f"sqlite:///{tmp_path / 'ingest.db'}")
     init_schema(engine)
     load_all(engine, get_settings().dataset_path)

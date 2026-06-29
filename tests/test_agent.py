@@ -22,6 +22,8 @@ from freight_agent.tools import (
     search_comms,
 )
 
+from .conftest import dataset_available
+
 _DIM = 32
 
 
@@ -52,6 +54,8 @@ class Fixture:
 
 @pytest.fixture(scope="module")
 def comms(tmp_path_factory: pytest.TempPathFactory) -> Fixture:
+    if not dataset_available():
+        pytest.skip("raw dataset not present (set DATASET_DIR to run dataset-backed tests)")
     settings = get_settings()
     db_path = tmp_path_factory.mktemp("agentdb") / "comms.db"
     engine = make_engine(f"sqlite:///{db_path}")
